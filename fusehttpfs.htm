@@ -1,0 +1,266 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>Реализация файловой системы с использованием FUSE</title>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+  <link rel="stylesheet" href="http://yandex.st/highlightjs/7.2/styles/default.min.css"/>
+  <script src="http://yandex.st/highlightjs/7.2/highlight.min.js" type="text/javascript"></script>
+  <script type="text/javascript">hljs.initHighlightingOnLoad();</script>
+  <style type="text/css">
+    .code {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      font: 14px/14px  Courier New, Andale Mono, Courier;
+    }
+    .wmb {
+      margin-bottom: 0;
+    }
+    pre, ul {
+      margin-top: 0;
+      margin-bottom: 0;
+    }
+    pre code {
+      padding: 0;
+      background: #fff
+    }
+  </style>
+</head>
+<body>
+<center><h1>Реализация файловой системы с использованием FUSE</h1></center>
+<center>Автор: <a href="mailto:vorkulsky@gmail.com">Федоров Антон</a>, КН-301, 2012</center>
+<center>Руководитель: Хозов Андрей Валерьевич</center><br/>
+
+<h2>Оглавление</h2>
+<ul>
+  <li><a href="#1">Введение</a></li>
+  <li><a href="#2">Постановка задачи</a></li>
+  <li><a href="#3">Подготовка к работе</a></li>
+  <li><a href="#4">Написание файловой системы</a></li>
+</ul>
+
+<h2><a name="1">Введение</a></h2>
+
+<p><b>Filesystem in Userspace</b> (<b>FUSE</b>) («Файловая система в пользовательском пространстве») — это модуль для ядер UNIX-подобных операционных систем, с открытым исходным кодом и относящийся к свободному программному обеспечению.</p>
+
+<p>В операционных системах обычно существует несколько уровней привилегий, в частности, уровень ядра и пользовательский уровень. Код на уровне ядра имеет абсолютную власть. Системное программное обеспечение, такое как файловые системы, обычно является частью ядра, и не может быть изменено обычным пользователем.</p>
+
+<p class="wmb">FUSE позволяет легко создавать файловые системы:</p>
+<ul>
+  <li>без необходимости знать, как работает ядро</li>
+  <li>без возможности что-нибудь поломать в системе</li>
+  <li>используя высокоуровневые языки программирования, такие как C++, Java, C#, Haskell, Python, Perl и др.</li>
+</ul>
+
+<p>Виртуальные файловые системы не хранят данные непосредственно. Они действуют как представление, трансляция существующей файловой системы или устройства хранения.</p>
+
+<h2><a name="2">Постановка задачи</a></h2>
+
+<p>Реализовать с использованием FUSE файловую систему HTTPFS. Ей при монтировании указывается веб-страница, ссылки которой будут представлены в виде каталогов, а файлы будут содержать html-страницы или файлы.</p>
+
+<h2><a name="3">Подготовка к работе</a></h2>
+
+<p class="wmb">Нам понадобится <a href="http://sourceforge.net/projects/fuse/">последняя версия FUSE</a>.
+Установка очень простая, после распаковки выполним:</p>
+
+<div class="code">
+    > ./configure
+    > make
+    > sudo make install
+</div>
+
+<p>Для написания файловой системы будем использовать язык Python 2.7.<br/>
+Нам понадобится модуль <a href="http://fuse.cvs.sourceforge.net/viewvc/fuse/python/">fuse-python</a>.</p>
+
+<p class="wmb">Для его установки нужен пакет python2.7-dev.</p>
+
+<div class="code">
+    > sudo apt-get install python2.7-dev
+</div>
+
+<p class="wmb">После распаковки fuse-python выполним:</p>
+
+<div class="code">
+    > python setup.py build
+    > sudo python setup.py install
+</div>
+
+<p class="wmb">Чтобы проверить, что необходимые компоненты работают правильно, запустим стандартный пример, прилагающийся к fuse-python. Заодно научимся монтировать и отмонтировать файловые системы FUSE. В папке, из которой производилась установка fuse-python, выполним:</p>
+
+<div class="code">
+    > cd example/
+    > mkdir /tmp/fuse/
+    > python hello.py /tmp/fuse/
+</div>
+
+<p class="wmb">Файловая система с единственным файлом "hello" была смонтирована в папку "/tmp/fuse/". Чтобы отмонтировать файловую систему, выполним:</p>
+
+<div class="code">
+    > fusermount -u /tmp/fuse/
+</div>
+
+<p>Документацию к модулю fuse-python можно найти в файле fuse.py (docstrings) из папки с fuse-python, и <a href="http://python-fuse.sourcearchive.com/documentation/2:0.2.1-7/main.html">по ссылке</a>.</p>
+
+<h2><a name="4">Написание файловой системы</a></h2>
+
+<p class="wmb">Импортируем нужные модули.<br/>
+Модуль pointer, написанный мной, содержит класс PointerHTTPFS, выполняющий операции по загрузке веб-страниц из сети, их анализу и др. Я вынес эти операции в отдельные файлы, чтобы не отвлекать внимание от FUSE в этом отчете. Полный исходный код файловой системы HTTPFS доступен <a href="fusehttpfs.zip">по ссылке</a>.</p>
+
+<pre><code class="python">
+    import errno
+    import os
+    import stat
+    import sys
+
+    import fuse
+    from fuse import Fuse
+
+    from pointer import PointerHTTPFS
+</code></pre>
+
+<p class="wmb">Сообщим fuse-python какую ее версию мы используем.</p>
+
+<pre><code class="python">
+    fuse.fuse_python_api = (0, 2)
+</code></pre>
+
+<p class="wmb">Опишем структуру StatHTTPFS. В конструкторе все ее поля инициализируются нулями. Структура StatHTTPFS хранит все атрибуты файловых объектов. Подробнее о том, для чего используется каждое поле и какие значения они могут принимать можно прочитать в <a href="http://www.opennet.ru/man.shtml?topic=fstat&amp;category=2">man fstat</a>. Я объясню предназначение некоторых полей, когда потребуется их использовать.</p>
+
+<pre><code class="python">
+    class StatHTTPFS(fuse.Stat):
+        def __init__(self):
+            fuse.Stat.__init__(self)
+            self.st_mode = 0
+            self.st_ino = 0
+            self.st_dev = 0
+            self.st_nlink = 0
+            self.st_uid = 0
+            self.st_gid = 0
+            self.st_size = 0
+            self.st_atime = 0
+            self.st_mtime = 0
+            self.st_ctime = 0
+</code></pre>
+
+<p class="wmb">Опишем основной для нашей файловой системы класс HTTPFS. От класса-предка Fuse он получает определение по умолчанию всех файловых операций. Большинство операций по умолчанию возвращают код ошибки -errno.ENOSYS, означающий «операция не определена».</p>
+
+<pre><code class="python">
+    class HTTPFS(Fuse):
+</code></pre>
+
+<p class="wmb">В конструкторе класса HTTPFS вызывается конструктор базового класса, которому передаются именованные аргументы в словаре **kw, и инициализируется переменная-член self.root. Ей присваивается переданный адрес корневой веб-страницы файловой системы.</p>
+
+<pre><code class="python">
+        def __init__(self, root, *args, **kw):
+            Fuse.__init__(self, *args, **kw)
+            self.root = root
+</code></pre>
+
+<p>Первой определим функцию <b>getattr</b> (точнее, метод класса HTTPFS). Она вызывается перед каждой операцией в файловой системе. Ей передается путь до файлового объекта (файла, папки, сокета и др.). Если такого объекта не существует, то возвращается код ошибки -errno.ENOENT, означающий «не найден файл или папка». Если же файловый объект существует, она возвращает заполненную структуру StatHTTPFS.</p>
+
+<p>Поле st_mode содержит информацию о типе файлового объекта и правах доступа. Константы S_IFDIR и S_IFDIR указывают, что файловый объект соответственно является папкой или обычным (regular) файлом. Правила числовой записи прав доступа можно посмотреть <a href="http://ru.wikipedia.org/wiki/Chmod">здесь</a>.</p>
+
+<p>Поле st_nlink задает количество жестких ссылок на файловый объект. Для файла это число должно быть равно 1. Для каталога равно 2 или 3.</p>
+
+<p>Поле st_size для файла содержит его размер в байтах.</p>
+
+<p class="wmb">В этой функции я первый раз использовал объект моего класса PointerHTTPFS. Он инициализируется адресом корневой веб-страницы и путем до файлового объекта. Предназначение методов isDir, isFile и getSize ясно из названия.</p>
+
+<pre><code class="python">
+        def getattr(self, path):
+            st = StatHTTPFS()
+            pt = PointerHTTPFS(self.root, path)
+            if pt.isDir():
+                st.st_mode = stat.S_IFDIR | 0444
+                st.st_nlink = 2
+            elif pt.isFile():
+                st.st_mode = stat.S_IFREG | 0444
+                st.st_nlink = 1
+                st.st_size = pt.getSize()
+            else:
+                return -errno.ENOENT
+            return st
+</code></pre>
+
+<p class="wmb">Функция <b>readdir</b> вызывается при попытке просмотра содержимого каталога. Например, при использовании ls. Ей передается путь до каталога и смещение. Возвращает она список объектов переноса данных каталога (fuse.Direntry), инициализируемых именами объектов, содержащихся в каталоге. В режиме, который я использовал, смещение игнорируется. Про другой режим работы функции readdir можно прочитать  <a href="http://fuse.sourceforge.net/doxygen/structfuse__operations.html#0f634deda31d1e1c42664585ae820076">в документации</a> (там декларация функции приведена на C).</p>
+
+<pre><code class="python">
+        def readdir(self, path, offset):
+            pt = PointerHTTPFS(self.root, path)
+            for entry in pt.getEntries():
+                yield fuse.Direntry(entry)
+</code></pre>
+
+<p class="wmb">Функция <b>open</b> вызывается при попытке открыть файл. Ей передается путь до файла и флаги. Функция проверяет разрешена ли операция для данных флагов доступа. Наша файловая система доступна только для чтения, поэтому при попытке открытия файла с возможностью записи возвращается код ошибки -errno.EACCES, означающий «доступ запрещен». Подробнее про флаги доступа можно прочитать <a href="http://sourceforge.net/apps/mediawiki/fuse/index.php?title=Fuse_file_info">по ссылке</a>.</p>
+
+<pre><code class="python">
+        def open(self, path, flags):
+            accmode = os.O_RDONLY | os.O_WRONLY | os.O_RDWR
+            if (flags &amp; accmode) != os.O_RDONLY:
+                return -errno.EACCES
+</code></pre>
+
+<p class="wmb">Функция <b>read</b> вызывается для чтения данных из открытого файла. Ее аргументами является путь до файла, размер запрошенного блока в байтах и смещение этого блока от начала файла. Гарантируется, что перед вызовом read будет обязательно вызван open, поэтому в функции read не нужно проверять права доступа. Функция read должна вернуть ровно столько байт, сколько было запрошено, или ошибку. В противном случае либо лишние байты будут отсечены, либо недостающие заполнены нулями. Ошибка с кодом -errno.EIO означает, что произошла ошибка ввода/вывода.</p>
+
+<pre><code class="python">
+        def read(self, path, size, offset):
+            pt = PointerHTTPFS(self.root, path)
+            try:
+                return pt.read(size, offset)
+            except RuntimeError, e:
+                return -errno.EIO
+</code></pre>
+
+<p class="wmb">Функция <b>release</b> служит для закрытия открытого файла. Она вызывается, когда нет больше ссылок на открытый файл: все дескрипторы файлов закрыты и вся память, на которую был отображен файл, освобождена. На каждый вызов функции open должен приходиться точно один вызов release и с теми же самыми флагами.<br/>
+Метод release класса PointerHTTPFS удаляет некоторую связанную с файлом информацию из кэша.</p>
+
+<pre><code class="python">
+        def release(self, path, flags):
+            pt = PointerHTTPFS(self.root, path)
+            pt.release()
+</code></pre>
+
+<p>В классе HTTPFS я переопределил не все файловые операции. Для большинства действует реализация по умолчанию. Названия операций в fuse-python и их аргументы перечислены в <a href="http://sourceforge.net/apps/mediawiki/fuse/index.php?title=FUSE_Python_Reference">FUSE Python Reference</a>. Несколько более подробное описание операций, но для языка C, доступно <a href="http://fuse.sourceforge.net/doxygen/structfuse__operations.html">по ссылке</a>. То, что написано для C, в какой-то мере можно перенести и на python.</p>
+
+<p class="wmb">Опишем функцию, которая будет запускать нашу файловую систему.<br/>
+Проверяется, что переданный URL-адрес корневой веб-страницы правильный и страница по нему доступна.</p>
+
+<pre><code class="python">
+    def main():
+        baseurl = ''
+        if len(sys.argv) &lt; 3:
+            sys.argv += ['--help']
+        else:
+            baseurl = 'http://' + sys.argv[1]
+            pt = PointerHTTPFS(baseurl, '/')
+            if not pt.isDir():
+                print 'Error: bad BaseURL\n'
+                sys.argv += ['--help']
+</code></pre>
+
+<p>Создается переменная основного класса файловой системы.<br/>
+Именованный аргумент dash_s_do='setsingle' указывает, что наша файловая система будет работать в однопоточном режиме. Подробнее об этом аргументе <a href="http://python-fuse.sourcearchive.com/documentation/2:0.2.1-7/classfuse_1_1FuseOptParse.html">по ссылке</a>.</p>
+
+<p>Команда server.parse() анализирует остальные параметры командной строки. Параметр errex=1 указывает какой код нужно вернуть, если во время работы парсера произошла ошибка.</p>
+
+<p class="wmb">Команда server.main() запускает файловую систему.</p>
+
+<pre><code class="python">
+        usage = """%prog [BaseURL] [mountpoint] [options]"""
+
+        server = HTTPFS(baseurl, version="%prog " + fuse.__version__,
+                         usage=usage,
+                         dash_s_do='setsingle')
+
+        server.parse(errex=1)
+        server.main()
+
+
+    if __name__ == '__main__':
+        main()
+</code></pre>
+
+<p>После вызова server.main() приложение теряет доступ к консоли, из которой оно было запущено. Поэтому для того, чтобы проводить отладку и получать какую-либо информацию о работе запущенного приложения, требуется вести лог-файл.</p>
+
+<p><b>Полный исходный код файловой системы HTTPFS доступен <a href="fusehttpfs.zip">по ссылке</a>.</b></p>
+</body>
+</html>
